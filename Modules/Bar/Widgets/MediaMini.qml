@@ -40,6 +40,7 @@ Item {
   readonly property bool showAlbumArt: (widgetSettings.showAlbumArt !== undefined) ? widgetSettings.showAlbumArt : widgetMetadata.showAlbumArt
   readonly property bool showArtistFirst: (widgetSettings.showArtistFirst !== undefined) ? widgetSettings.showArtistFirst : widgetMetadata.showArtistFirst
   readonly property bool showVisualizer: (widgetSettings.showVisualizer !== undefined) ? widgetSettings.showVisualizer : widgetMetadata.showVisualizer
+  readonly property bool visualizerEnabled: showVisualizer && CavaService.available
   readonly property string visualizerType: (widgetSettings.visualizerType !== undefined && widgetSettings.visualizerType !== "") ? widgetSettings.visualizerType : widgetMetadata.visualizerType
   readonly property string scrollingMode: (widgetSettings.scrollingMode !== undefined) ? widgetSettings.scrollingMode : widgetMetadata.scrollingMode
   readonly property bool showProgressRing: (widgetSettings.showProgressRing !== undefined) ? widgetSettings.showProgressRing : widgetMetadata.showProgressRing
@@ -68,7 +69,7 @@ Item {
 
   // CavaService registration for visualizer
   readonly property string cavaComponentId: "bar:mediamini:" + root.screen.name + ":" + root.section + ":" + root.sectionWidgetIndex
-  readonly property bool needsCava: root.showVisualizer && root.visualizerType !== "" && root.visualizerType !== "none"
+  readonly property bool needsCava: root.visualizerEnabled && root.visualizerType !== "" && root.visualizerType !== "none"
 
   onNeedsCavaChanged: {
     if (root.needsCava) {
@@ -240,10 +241,10 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         width: parent.width
         height: parent.height
-        active: showVisualizer
+        active: visualizerEnabled
         z: 0
         sourceComponent: {
-          if (!showVisualizer)
+          if (!visualizerEnabled)
             return null;
           if (visualizerType === "linear")
             return linearSpectrum;
@@ -442,13 +443,20 @@ Item {
     property real progress: 0
     property real lineWidth: 2.5
 
-    onProgressChanged: requestPaint()
-    Component.onCompleted: requestPaint()
+    function repaint() {
+      if (visible && opacity > 0) {
+        requestPaint();
+      }
+    }
+
+    onProgressChanged: repaint()
+    onVisibleChanged: repaint()
+    Component.onCompleted: repaint()
 
     Connections {
       target: Color
       function onMPrimaryChanged() {
-        requestPaint();
+        repaint();
       }
     }
 
@@ -488,6 +496,10 @@ Item {
     property real fontSize
     property string scrollMode
     property bool needsScroll
+    readonly property int scrollTickIntervalMs: 33
+    readonly property int minimumScrollDurationMs: 4000
+    readonly property int scrollDurationPerCharacterMs: 120
+    readonly property real scrollingTextGap: 50
 
     clip: true
     implicitHeight: titleText.height
@@ -549,7 +561,7 @@ Item {
       x: scrollX
 
       RowLayout {
-        spacing: 50
+        spacing: scrollText.scrollingTextGap
         NText {
           id: titleText
           text: scrollText.text
@@ -583,13 +595,20 @@ Item {
         onFinished: scrollText.isResetting = false
       }
 
-      NumberAnimation on scrollX {
+      Timer {
+        interval: scrollText.scrollTickIntervalMs
+        repeat: true
         running: scrollText.isScrolling && !scrollText.isResetting
-        from: 0
-        to: -(titleMetrics.contentWidth + 50)
-        duration: Math.max(4000, scrollText.text.length * 120)
-        loops: Animation.Infinite
-        easing.type: Easing.Linear
+        onTriggered: {
+          const distance = titleMetrics.contentWidth + scrollText.scrollingTextGap;
+          const duration = Math.max(scrollText.minimumScrollDurationMs, scrollText.text.length * scrollText.scrollDurationPerCharacterMs);
+          if (distance <= 0 || duration <= 0)
+            return;
+
+          scrollContainer.scrollX -= distance * (interval / duration);
+          if (scrollContainer.scrollX <= -distance)
+            scrollContainer.scrollX += distance;
+        }
       }
     }
   }

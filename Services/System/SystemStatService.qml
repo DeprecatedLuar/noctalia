@@ -12,9 +12,92 @@ Singleton {
   // Configuration
   readonly property int minimumIntervalMs: 250
   readonly property int defaultIntervalMs: 3000
+  readonly property int kibPerGib: 1048576
+  readonly property int millidegreesPerDegree: 1000
+  readonly property int maximumHwmonDevices: 16
 
   function normalizeInterval(value) {
     return Math.max(minimumIntervalMs, value || defaultIntervalMs);
+  }
+
+  // Poll only metrics requested by live UI consumers. Keeping this per metric
+  // avoids waking expensive subprocesses for hidden or disabled widgets.
+  property var _consumers: ({})
+  property int _nextConsumerSequence: 0
+  property bool _pollCpuUsage: false
+  property bool _pollCpuTemp: false
+  property bool _pollMemory: false
+  property bool _pollDisk: false
+  property bool _pollNetwork: false
+  property bool _pollGpuTemp: false
+
+  function createConsumerId(prefix) {
+    if (!prefix) {
+      Logger.w("SystemStat", "Cannot create a consumer ID without a prefix");
+      return "";
+    }
+
+    root._nextConsumerSequence++;
+    return `${prefix}:${root._nextConsumerSequence}`;
+  }
+
+  function registerConsumer(consumerId, requirements) {
+    if (!consumerId || !requirements) {
+      Logger.w("SystemStat", "Cannot register a consumer without an ID and requirements");
+      return;
+    }
+
+    const consumers = Object.assign({}, root._consumers);
+    consumers[consumerId] = {
+      "cpuUsage": requirements.cpuUsage === true,
+      "cpuTemp": requirements.cpuTemp === true,
+      "memory": requirements.memory === true,
+      "disk": requirements.disk === true,
+      "network": requirements.network === true,
+      "gpuTemp": requirements.gpuTemp === true
+    };
+    root._consumers = consumers;
+    root.updatePollingDemand();
+  }
+
+  function unregisterConsumer(consumerId) {
+    if (!consumerId || !root._consumers[consumerId]) {
+      Logger.w("SystemStat", `Cannot unregister unknown consumer: ${consumerId || "<empty>"}`);
+      return;
+    }
+
+    const consumers = Object.assign({}, root._consumers);
+    delete consumers[consumerId];
+    root._consumers = consumers;
+    root.updatePollingDemand();
+  }
+
+  function updatePollingDemand() {
+    let cpuUsage = false;
+    let cpuTemp = false;
+    let memory = false;
+    let disk = false;
+    let network = false;
+    let gpuTemp = false;
+
+    for (const consumerId of Object.keys(root._consumers)) {
+      const requirements = root._consumers[consumerId];
+      cpuUsage = cpuUsage || requirements.cpuUsage;
+      cpuTemp = cpuTemp || requirements.cpuTemp;
+      memory = memory || requirements.memory;
+      disk = disk || requirements.disk;
+      network = network || requirements.network;
+      gpuTemp = gpuTemp || requirements.gpuTemp;
+    }
+
+    root._pollCpuUsage = cpuUsage;
+    root._pollCpuTemp = cpuTemp;
+    root._pollMemory = memory;
+    root._pollDisk = disk;
+    root._pollNetwork = network;
+    root._pollGpuTemp = gpuTemp;
+
+    Logger.i("SystemStat", `Polling demand: cpu=${cpuUsage}, temp=${cpuTemp}, memory=${memory}, disk=${disk}, network=${network}, gpu=${gpuTemp}`);
   }
 
   // Public values
@@ -25,6 +108,8 @@ Singleton {
   property string gpuType: "" // "amd", "intel", "nvidia"
   property real memGb: 0
   property real memPercent: 0
+  // Memory unavailable without reclaim. Used for warning thresholds, not display.
+  property real memPressurePercent: 0
   property var diskPercents: ({})
   property real rxSpeed: 0
   property real txSpeed: 0
@@ -41,14 +126,10 @@ Singleton {
   property real prevTxBytes: 0
   property real prevTime: 0
 
-  // Cpu temperature is the most complex
+  // CPU temperature sensor discovered once, then read directly from sysfs.
   readonly property var supportedTempCpuSensorNames: ["coretemp", "k10temp", "zenpower"]
   property string cpuTempSensorName: ""
   property string cpuTempHwmonPath: ""
-  // For Intel coretemp averaging of all cores/sensors
-  property var intelTempValues: []
-  property int intelTempFilesChecked: 0
-  property int intelTempMaxFiles: 20 // Will test up to temp20_input
 
   // GPU temperature detection
   // On dual-GPU systems, we prioritize discrete GPUs over integrated GPUs
@@ -61,9 +142,10 @@ Singleton {
 
   // --------------------------------------------
   Component.onCompleted: {
-    Logger.i("SystemStat", "Service started with custom polling intervals");
+    Logger.i("SystemStat", "Service started with demand-driven polling");
 
-    // Kickoff the cpu name detection for temperature
+    // Discover the CPU temperature sensor once. Polling starts only if a
+    // consumer requests temperature data.
     cpuTempNameReader.checkNext();
 
     // Kickoff the gpu sensor detection for temperature
@@ -102,11 +184,16 @@ Singleton {
     id: cpuUsageTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.cpuPollingInterval)
     repeat: true
-    running: true
+    running: root._pollCpuUsage
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
         restart();
+      }
+    }
+    onRunningChanged: {
+      if (running) {
+        root.prevCpuStats = null;
       }
     }
     onTriggered: cpuStatFile.reload()
@@ -117,7 +204,7 @@ Singleton {
     id: cpuTempTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.tempPollingInterval)
     repeat: true
-    running: true
+    running: root._pollCpuTemp
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
@@ -132,7 +219,7 @@ Singleton {
     id: memoryTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.memPollingInterval)
     repeat: true
-    running: true
+    running: root._pollMemory
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
@@ -150,14 +237,14 @@ Singleton {
     id: diskTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.diskPollingInterval)
     repeat: true
-    running: true
+    running: root._pollDisk
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
         restart();
       }
     }
-    onTriggered: dfProcess.running = true
+    onTriggered: root.refreshDiskUsage()
   }
 
   // Timer for network speeds
@@ -165,11 +252,18 @@ Singleton {
     id: networkTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.networkPollingInterval)
     repeat: true
-    running: true
+    running: root._pollNetwork
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
         restart();
+      }
+    }
+    onRunningChanged: {
+      if (running) {
+        root.prevRxBytes = 0;
+        root.prevTxBytes = 0;
+        root.prevTime = 0;
       }
     }
     onTriggered: netDevFile.reload()
@@ -180,7 +274,7 @@ Singleton {
     id: gpuTempTimer
     interval: root.normalizeInterval(Settings.data.systemMonitor.gpuPollingInterval)
     repeat: true
-    running: root.gpuAvailable
+    running: root._pollGpuTemp && root.gpuAvailable
     triggeredOnStart: true
     onIntervalChanged: {
       if (running) {
@@ -249,27 +343,29 @@ Singleton {
     }
   }
 
+  function refreshDiskUsage() {
+    if (!dfProcess.running) {
+      dfProcess.running = true;
+    }
+  }
+
   // --------------------------------------------
   // --------------------------------------------
-  // CPU Temperature
-  // It's more complex.
-  // ----
-  // #1 - Find a common cpu sensor name ie: "coretemp", "k10temp", "zenpower"
+  // CPU temperature discovery. coretemp, k10temp, and zenpower expose their
+  // package/Tctl reading as temp1_input, so each refresh is one sysfs read.
   FileView {
     id: cpuTempNameReader
     property int currentIndex: 0
     printErrors: false
 
     function checkNext() {
-      if (currentIndex >= 16) {
-        // Check up to hwmon10
-        Logger.w("No supported temperature sensor found");
+      if (currentIndex >= root.maximumHwmonDevices) {
+        Logger.w("SystemStat", "No supported CPU temperature sensor found");
         return;
       }
 
-      //Logger.i("SystemStat", "---- Probing: hwmon", currentIndex)
-      cpuTempNameReader.path = `/sys/class/hwmon/hwmon${currentIndex}/name`;
-      cpuTempNameReader.reload();
+      path = `/sys/class/hwmon/hwmon${currentIndex}/name`;
+      reload();
     }
 
     onLoaded: {
@@ -277,52 +373,35 @@ Singleton {
       if (root.supportedTempCpuSensorNames.includes(name)) {
         root.cpuTempSensorName = name;
         root.cpuTempHwmonPath = `/sys/class/hwmon/hwmon${currentIndex}`;
-        Logger.i("SystemStat", `Found ${root.cpuTempSensorName} CPU thermal sensor at ${root.cpuTempHwmonPath}`);
+        Logger.i("SystemStat", `Found ${name} CPU thermal sensor at ${root.cpuTempHwmonPath}`);
       } else {
         currentIndex++;
-        Qt.callLater(() => {
-                       // Qt.callLater is mandatory
-                       checkNext();
-                     });
+        Qt.callLater(checkNext);
       }
     }
 
     onLoadFailed: function (error) {
       currentIndex++;
-      Qt.callLater(() => {
-                     // Qt.callLater is mandatory
-                     checkNext();
-                   });
+      Qt.callLater(checkNext);
     }
   }
 
-  // ----
-  // #2 - Read sensor value
   FileView {
     id: cpuTempReader
     printErrors: false
 
     onLoaded: {
-      const data = text().trim();
-      if (root.cpuTempSensorName === "coretemp") {
-        // For Intel, collect all temperature values
-        const temp = parseInt(data) / 1000.0;
-        //console.log(temp, cpuTempReader.path)
-        root.intelTempValues.push(temp);
-        Qt.callLater(() => {
-                       // Qt.callLater is mandatory
-                       checkNextIntelTemp();
-                     });
-      } else {
-        // For AMD sensors (k10temp and zenpower), directly set the temperature
-        root.cpuTemp = Math.round(parseInt(data) / 1000.0);
+      const millidegrees = parseInt(text().trim());
+      if (isNaN(millidegrees)) {
+        Logger.w("SystemStat", `Invalid CPU temperature from ${path}`);
+        return;
       }
+
+      root.cpuTemp = Math.round(millidegrees / root.millidegreesPerDegree);
     }
+
     onLoadFailed: function (error) {
-      Qt.callLater(() => {
-                     // Qt.callLater is mandatory
-                     checkNextIntelTemp();
-                   });
+      Logger.w("SystemStat", `Failed to read CPU temperature from ${path}: ${error}`);
     }
   }
 
@@ -339,7 +418,7 @@ Singleton {
     printErrors: false
 
     function checkNext() {
-      if (currentIndex >= 16) {
+      if (currentIndex >= root.maximumHwmonDevices) {
         // Finished scanning all hwmon entries
         // Only check nvidia-smi if user has explicitly enabled dGPU monitoring (opt-in)
         // because nvidia-smi wakes up the dGPU on laptops, draining battery
@@ -519,24 +598,47 @@ Singleton {
       return;
     const lines = text.split('\n');
     let memTotal = 0;
+    let memFree = 0;
     let memAvailable = 0;
+    let buffers = 0;
+    let cached = 0;
+    let reclaimableSlab = 0;
 
     for (const line of lines) {
       if (line.startsWith('MemTotal:')) {
         memTotal = parseInt(line.split(/\s+/)[1]) || 0;
+      } else if (line.startsWith('MemFree:')) {
+        memFree = parseInt(line.split(/\s+/)[1]) || 0;
       } else if (line.startsWith('MemAvailable:')) {
         memAvailable = parseInt(line.split(/\s+/)[1]) || 0;
+      } else if (line.startsWith('Buffers:')) {
+        buffers = parseInt(line.split(/\s+/)[1]) || 0;
+      } else if (line.startsWith('Cached:')) {
+        cached = parseInt(line.split(/\s+/)[1]) || 0;
+      } else if (line.startsWith('SReclaimable:')) {
+        reclaimableSlab = parseInt(line.split(/\s+/)[1]) || 0;
       }
     }
 
     if (memTotal > 0) {
-      // Calculate usage, adjusting for ZFS ARC cache if present
-      let usageKb = memTotal - memAvailable;
+      // Display application-like usage: exclude filesystem buffers and
+      // reclaimable caches, matching the cache-excluding view users expect.
+      let usageKb = memTotal - memFree - buffers - cached - reclaimableSlab;
+
+      // Warnings represent scarcity: memory unavailable without reclaiming it.
+      let pressureUsageKb = memTotal - memAvailable;
+
+      // ZFS ARC is reclaimable cache but is not included in Linux Cached.
       if (root.zfsArcSizeKb > 0) {
         usageKb = Math.max(0, usageKb - root.zfsArcSizeKb + root.zfsArcCminKb);
+        pressureUsageKb = Math.max(0, pressureUsageKb - root.zfsArcSizeKb + root.zfsArcCminKb);
       }
-      root.memGb = (usageKb / 1048576).toFixed(1); // 1024*1024 = 1048576
+
+      usageKb = Math.min(memTotal, Math.max(0, usageKb));
+      pressureUsageKb = Math.min(memTotal, Math.max(0, pressureUsageKb));
+      root.memGb = (usageKb / root.kibPerGib).toFixed(1);
       root.memPercent = Math.round((usageKb / memTotal) * 100);
+      root.memPressurePercent = Math.round((pressureUsageKb / memTotal) * 100);
     }
   }
 
@@ -732,43 +834,13 @@ Singleton {
   }
 
   // -------------------------------------------------------
-  // Function to start fetching and computing the cpu temperature
+  // Refresh the package/Tctl CPU temperature without spawning a process.
   function updateCpuTemperature() {
-    // For AMD sensors (k10temp and zenpower), only use Tctl sensor
-    // temp1_input corresponds to Tctl (Temperature Control) on these sensors
-    if (root.cpuTempSensorName === "k10temp" || root.cpuTempSensorName === "zenpower") {
-      cpuTempReader.path = `${root.cpuTempHwmonPath}/temp1_input`;
-      cpuTempReader.reload();
-    } // For Intel coretemp, start averaging all available sensors/cores
-    else if (root.cpuTempSensorName === "coretemp") {
-      root.intelTempValues = [];
-      root.intelTempFilesChecked = 0;
-      checkNextIntelTemp();
-    }
-  }
-
-  // -------------------------------------------------------
-  // Function to check next Intel temperature sensor
-  function checkNextIntelTemp() {
-    if (root.intelTempFilesChecked >= root.intelTempMaxFiles) {
-      // Calculate average of all found temperatures
-      if (root.intelTempValues.length > 0) {
-        let sum = 0;
-        for (var i = 0; i < root.intelTempValues.length; i++) {
-          sum += root.intelTempValues[i];
-        }
-        root.cpuTemp = Math.round(sum / root.intelTempValues.length);
-        //Logger.i("SystemStat", `Averaged ${root.intelTempValues.length} CPU thermal sensors: ${root.cpuTemp}°C`)
-      } else {
-        Logger.w("SystemStat", "No temperature sensors found for coretemp");
-        root.cpuTemp = 0;
-      }
+    if (root.cpuTempHwmonPath === "") {
       return;
     }
 
-    // Check next temperature file
-    root.intelTempFilesChecked++;
-    cpuTempReader.path = `${root.cpuTempHwmonPath}/temp${root.intelTempFilesChecked}_input`;
+    cpuTempReader.path = `${root.cpuTempHwmonPath}/temp1_input`;
     cpuTempReader.reload();
   }
 

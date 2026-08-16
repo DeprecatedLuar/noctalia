@@ -34,6 +34,7 @@ Rectangle {
   readonly property string barPosition: Settings.data.bar.position
   readonly property bool isVertical: barPosition === "left" || barPosition === "right"
   readonly property bool density: Settings.data.bar.density
+  readonly property int metricSpacing: Math.round(5 * Style.uiScaleRatio)
 
   readonly property bool usePrimaryColor: widgetSettings.usePrimaryColor !== undefined ? widgetSettings.usePrimaryColor : widgetMetadata.usePrimaryColor
   readonly property bool showCpuUsage: (widgetSettings.showCpuUsage !== undefined) ? widgetSettings.showCpuUsage : widgetMetadata.showCpuUsage
@@ -44,6 +45,66 @@ Rectangle {
   readonly property bool showNetworkStats: (widgetSettings.showNetworkStats !== undefined) ? widgetSettings.showNetworkStats : widgetMetadata.showNetworkStats
   readonly property bool showDiskUsage: (widgetSettings.showDiskUsage !== undefined) ? widgetSettings.showDiskUsage : widgetMetadata.showDiskUsage
   readonly property string diskPath: (widgetSettings.diskPath !== undefined) ? widgetSettings.diskPath : widgetMetadata.diskPath
+
+  property string statsConsumerId: ""
+  property bool statsConsumerRegistered: false
+
+  function syncStatsDemand() {
+    if (!statsConsumerId) {
+      Logger.w("SystemMonitor", "Cannot register system-stat polling without a consumer ID");
+      return;
+    }
+
+    SystemStatService.registerConsumer(statsConsumerId, {
+                                         "cpuUsage": showCpuUsage,
+                                         "cpuTemp": showCpuTemp,
+                                         "memory": showMemoryUsage,
+                                         "disk": showDiskUsage,
+                                         "network": showNetworkStats,
+                                         "gpuTemp": showGpuTemp
+                                       });
+    statsConsumerRegistered = true;
+  }
+
+  function unregisterStatsDemand() {
+    if (!statsConsumerRegistered) {
+      return;
+    }
+
+    SystemStatService.unregisterConsumer(statsConsumerId);
+    statsConsumerRegistered = false;
+  }
+
+  Component.onCompleted: {
+    statsConsumerId = SystemStatService.createConsumerId("bar-system-monitor");
+    syncStatsDemand();
+  }
+  Component.onDestruction: unregisterStatsDemand()
+
+  onShowCpuUsageChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
+  onShowCpuTempChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
+  onShowMemoryUsageChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
+  onShowDiskUsageChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
+  onShowNetworkStatsChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
+  onShowGpuTempChanged: {
+    if (statsConsumerRegistered)
+      syncStatsDemand();
+  }
 
   readonly property real iconSize: textSize * 1.4
   readonly property real textSize: {
@@ -83,8 +144,8 @@ Rectangle {
   readonly property bool tempCritical: showCpuTemp && SystemStatService.cpuTemp > tempCriticalThreshold
   readonly property bool gpuWarning: showGpuTemp && SystemStatService.gpuAvailable && SystemStatService.gpuTemp > gpuWarningThreshold
   readonly property bool gpuCritical: showGpuTemp && SystemStatService.gpuAvailable && SystemStatService.gpuTemp > gpuCriticalThreshold
-  readonly property bool memWarning: showMemoryUsage && SystemStatService.memPercent > memWarningThreshold
-  readonly property bool memCritical: showMemoryUsage && SystemStatService.memPercent > memCriticalThreshold
+  readonly property bool memWarning: showMemoryUsage && SystemStatService.memPressurePercent > memWarningThreshold
+  readonly property bool memCritical: showMemoryUsage && SystemStatService.memPressurePercent > memCriticalThreshold
   readonly property bool diskWarning: showDiskUsage && SystemStatService.diskPercents[diskPath] > diskWarningThreshold
   readonly property bool diskCritical: showDiskUsage && SystemStatService.diskPercents[diskPath] > diskCriticalThreshold
 
@@ -214,7 +275,7 @@ Rectangle {
     // CPU Usage Component
     Item {
       id: cpuUsageContainer
-      Layout.preferredWidth: isVertical ? root.width : iconSize + percentTextWidth + (Style.marginXXS)
+      Layout.preferredWidth: isVertical ? root.width : iconSize + percentTextWidth + metricSpacing
       Layout.preferredHeight: Style.capsuleHeight
       Layout.alignment: isVertical ? Qt.AlignHCenter : Qt.AlignVCenter
       visible: showCpuUsage
@@ -240,7 +301,7 @@ Rectangle {
         rows: isVertical ? 2 : 1
         columns: isVertical ? 1 : 2
         rowSpacing: Style.marginXXS
-        columnSpacing: Style.marginXXS
+        columnSpacing: metricSpacing
 
         Item {
           Layout.alignment: Qt.AlignCenter
@@ -264,7 +325,7 @@ Rectangle {
           text: {
             let usage = Math.round(SystemStatService.cpuUsage);
             if (usage < 100) {
-              return `${usage}%`;
+              return `${usage.toString().padStart(2, "0")}%`;
             } else {
               return usage;
             }
@@ -275,10 +336,78 @@ Rectangle {
           font.weight: Style.fontWeightMedium
           Layout.alignment: Qt.AlignCenter
           Layout.preferredWidth: isVertical ? -1 : percentTextWidth
-          horizontalAlignment: isVertical ? Text.AlignHCenter : Text.AlignRight
+          horizontalAlignment: isVertical ? Text.AlignHCenter : Text.AlignLeft
           verticalAlignment: Text.AlignVCenter
           // Use highlight colors in vertical bar; otherwise invert text color to bar background when indicator active
           color: isVertical ? (cpuCritical ? criticalColor : (cpuWarning ? warningColor : textColor)) : ((cpuWarning || cpuCritical) ? Color.mSurfaceVariant : textColor)
+          Layout.row: isVertical ? 0 : 0
+          Layout.column: isVertical ? 0 : 1
+          scale: isVertical ? Math.min(1.0, root.width / implicitWidth) : 1.0
+        }
+      }
+    }
+
+    // Memory Usage Component
+    Item {
+      id: memoryContainer
+      Layout.preferredWidth: isVertical ? root.width : iconSize + (showMemoryAsPercent ? percentTextWidth : memTextWidth) + metricSpacing
+      Layout.preferredHeight: Style.capsuleHeight
+      Layout.alignment: isVertical ? Qt.AlignHCenter : Qt.AlignVCenter
+      visible: showMemoryUsage
+
+      // Status indicator covering the entire component
+      Loader {
+        sourceComponent: statusIndicatorComponent
+        anchors.centerIn: parent
+
+        onLoaded: {
+          item.warning = Qt.binding(() => memWarning);
+          item.critical = Qt.binding(() => memCritical);
+          item.indicatorWidth = Qt.binding(() => memoryContainer.width);
+          item.warningColor = Qt.binding(() => root.warningColor);
+          item.criticalColor = Qt.binding(() => root.criticalColor);
+        }
+      }
+
+      GridLayout {
+        id: memoryContent
+        anchors.centerIn: parent
+        flow: isVertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
+        rows: isVertical ? 2 : 1
+        columns: isVertical ? 1 : 2
+        rowSpacing: Style.marginXXS
+        columnSpacing: metricSpacing
+
+        Item {
+          Layout.alignment: Qt.AlignCenter
+          Layout.row: isVertical ? 1 : 0
+          Layout.column: 0
+          Layout.fillWidth: isVertical
+          implicitWidth: iconSize
+          implicitHeight: iconSize
+
+          NIcon {
+            icon: "memory"
+            pointSize: iconSize
+            applyUiScale: false
+            anchors.centerIn: parent
+            // Invert color when memory indicator active
+            color: isVertical ? (memCritical ? criticalColor : (memWarning ? warningColor : Color.mOnSurface)) : ((memWarning || memCritical) ? Color.mSurfaceVariant : Color.mOnSurface)
+          }
+        }
+
+        NText {
+          text: showMemoryAsPercent ? `${Math.round(SystemStatService.memPercent)}%` : SystemStatService.formatMemoryGb(SystemStatService.memGb)
+          family: Settings.data.ui.fontFixed
+          pointSize: textSize
+          applyUiScale: false
+          font.weight: Style.fontWeightMedium
+          Layout.alignment: Qt.AlignCenter
+          Layout.preferredWidth: isVertical ? -1 : (showMemoryAsPercent ? percentTextWidth : memTextWidth)
+          horizontalAlignment: isVertical ? Text.AlignHCenter : Text.AlignLeft
+          verticalAlignment: Text.AlignVCenter
+          // Use highlight colors in vertical bar; otherwise invert text color to bar background when memory indicator active
+          color: isVertical ? (memCritical ? criticalColor : (memWarning ? warningColor : textColor)) : ((memWarning || memCritical) ? Color.mSurfaceVariant : textColor)
           Layout.row: isVertical ? 0 : 0
           Layout.column: isVertical ? 0 : 1
           scale: isVertical ? Math.min(1.0, root.width / implicitWidth) : 1.0
@@ -415,74 +544,6 @@ Rectangle {
           verticalAlignment: Text.AlignVCenter
           // Use highlight colors in vertical bar; otherwise invert text color to bar background when GPU temp indicator active
           color: isVertical ? (gpuCritical ? criticalColor : (gpuWarning ? warningColor : textColor)) : ((gpuWarning || gpuCritical) ? Color.mSurfaceVariant : textColor)
-          Layout.row: isVertical ? 0 : 0
-          Layout.column: isVertical ? 0 : 1
-          scale: isVertical ? Math.min(1.0, root.width / implicitWidth) : 1.0
-        }
-      }
-    }
-
-    // Memory Usage Component
-    Item {
-      id: memoryContainer
-      Layout.preferredWidth: isVertical ? root.width : iconSize + (showMemoryAsPercent ? percentTextWidth : memTextWidth) + (Style.marginXXS)
-      Layout.preferredHeight: Style.capsuleHeight
-      Layout.alignment: isVertical ? Qt.AlignHCenter : Qt.AlignVCenter
-      visible: showMemoryUsage
-
-      // Status indicator covering the entire component
-      Loader {
-        sourceComponent: statusIndicatorComponent
-        anchors.centerIn: parent
-
-        onLoaded: {
-          item.warning = Qt.binding(() => memWarning);
-          item.critical = Qt.binding(() => memCritical);
-          item.indicatorWidth = Qt.binding(() => memoryContainer.width);
-          item.warningColor = Qt.binding(() => root.warningColor);
-          item.criticalColor = Qt.binding(() => root.criticalColor);
-        }
-      }
-
-      GridLayout {
-        id: memoryContent
-        anchors.centerIn: parent
-        flow: isVertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
-        rows: isVertical ? 2 : 1
-        columns: isVertical ? 1 : 2
-        rowSpacing: Style.marginXXS
-        columnSpacing: Style.marginXXS
-
-        Item {
-          Layout.alignment: Qt.AlignCenter
-          Layout.row: isVertical ? 1 : 0
-          Layout.column: 0
-          Layout.fillWidth: isVertical
-          implicitWidth: iconSize
-          implicitHeight: iconSize
-
-          NIcon {
-            icon: "memory"
-            pointSize: iconSize
-            applyUiScale: false
-            anchors.centerIn: parent
-            // Invert color when memory indicator active
-            color: isVertical ? (memCritical ? criticalColor : (memWarning ? warningColor : Color.mOnSurface)) : ((memWarning || memCritical) ? Color.mSurfaceVariant : Color.mOnSurface)
-          }
-        }
-
-        NText {
-          text: showMemoryAsPercent ? `${Math.round(SystemStatService.memPercent)}%` : SystemStatService.formatMemoryGb(SystemStatService.memGb)
-          family: Settings.data.ui.fontFixed
-          pointSize: textSize
-          applyUiScale: false
-          font.weight: Style.fontWeightMedium
-          Layout.alignment: Qt.AlignCenter
-          Layout.preferredWidth: isVertical ? -1 : (showMemoryAsPercent ? percentTextWidth : memTextWidth)
-          horizontalAlignment: isVertical ? Text.AlignHCenter : Text.AlignRight
-          verticalAlignment: Text.AlignVCenter
-          // Use highlight colors in vertical bar; otherwise invert text color to bar background when memory indicator active
-          color: isVertical ? (memCritical ? criticalColor : (memWarning ? warningColor : textColor)) : ((memWarning || memCritical) ? Color.mSurfaceVariant : textColor)
           Layout.row: isVertical ? 0 : 0
           Layout.column: isVertical ? 0 : 1
           scale: isVertical ? Math.min(1.0, root.width / implicitWidth) : 1.0

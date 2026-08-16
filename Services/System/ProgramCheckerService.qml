@@ -17,6 +17,8 @@ Singleton {
   property bool wlsunsetAvailable: false
   property bool app2unitAvailable: false
   property bool gnomeCalendarAvailable: false
+  property bool cavaAvailable: false
+  property bool checksFinished: false
 
   // Programs to check - maps property names to commands
   readonly property var programsToCheck: ({
@@ -25,7 +27,8 @@ Singleton {
                                             "nmcliAvailable": ["which", "nmcli"],
                                             "wlsunsetAvailable": ["which", "wlsunset"],
                                             "app2unitAvailable": ["which", "app2unit"],
-                                            "gnomeCalendarAvailable": ["which", "gnome-calendar"]
+                                            "gnomeCalendarAvailable": ["which", "gnome-calendar"],
+                                            "cavaAvailable": ["which", "cava"]
                                           })
 
   // Discord client auto-detection
@@ -187,6 +190,7 @@ Singleton {
 
       // Check next program or emit completion signal
       if (root.completedChecks >= root.totalChecks) {
+        root.checksFinished = true;
         // Run Discord and Code client detection after all checks are complete
         root.detectDiscordClient();
         root.detectCodeClient();
@@ -221,6 +225,7 @@ Singleton {
   // Function to run all program checks
   function checkAllPrograms() {
     // Reset state
+    checksFinished = false;
     completedChecks = 0;
     currentCheckIndex = 0;
     checkQueue = Object.keys(programsToCheck);

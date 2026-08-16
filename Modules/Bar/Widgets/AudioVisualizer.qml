@@ -53,7 +53,7 @@ Item {
     }
   }
 
-  readonly property bool shouldShow: (currentVisualizerType !== "" && currentVisualizerType !== "none") && (!hideWhenIdle || MediaService.isPlaying)
+  readonly property bool shouldShow: CavaService.available && (currentVisualizerType !== "" && currentVisualizerType !== "none") && (!hideWhenIdle || MediaService.isPlaying)
 
   // Register/unregister with CavaService based on visibility
   readonly property string cavaComponentId: "bar:audiovisualizer:" + root.screen.name + ":" + root.section + ":" + root.sectionWidgetIndex

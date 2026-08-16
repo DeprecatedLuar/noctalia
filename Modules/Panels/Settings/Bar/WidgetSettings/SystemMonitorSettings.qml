@@ -9,6 +9,10 @@ ColumnLayout {
   id: root
   spacing: Style.marginM
 
+  // Populate mount choices when this editor is opened without keeping the
+  // disk poller alive while disk usage is disabled on the bar.
+  Component.onCompleted: SystemStatService.refreshDiskUsage()
+
   // Properties to receive data from parent
   property var widgetData: null
   property var widgetMetadata: null

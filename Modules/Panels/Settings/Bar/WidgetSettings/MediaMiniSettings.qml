@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Services.System
 import qs.Widgets
 
 ColumnLayout {
@@ -24,10 +25,25 @@ ColumnLayout {
   property int valueMaxWidth: widgetData.maxWidth !== undefined ? widgetData.maxWidth : widgetMetadata.maxWidth
   property bool valueUseFixedWidth: widgetData.useFixedWidth !== undefined ? widgetData.useFixedWidth : widgetMetadata.useFixedWidth
   property bool valueShowProgressRing: widgetData.showProgressRing !== undefined ? widgetData.showProgressRing : widgetMetadata.showProgressRing
+  readonly property bool visualizerAvailable: ProgramCheckerService.checksFinished && ProgramCheckerService.cavaAvailable
 
   Component.onCompleted: {
     if (widgetData && widgetData.hideMode !== undefined) {
       valueHideMode = widgetData.hideMode;
+    }
+    disableUnavailableVisualizer();
+  }
+
+  function disableUnavailableVisualizer() {
+    if (ProgramCheckerService.checksFinished && !ProgramCheckerService.cavaAvailable) {
+      valueShowVisualizer = false;
+    }
+  }
+
+  Connections {
+    target: ProgramCheckerService
+    function onChecksFinishedChanged() {
+      root.disableUnavailableVisualizer();
     }
   }
 
@@ -37,7 +53,7 @@ ColumnLayout {
     // No longer store hideWhenIdle separately; kept for backward compatibility only
     settings.showAlbumArt = valueShowAlbumArt;
     settings.showArtistFirst = valueShowArtistFirst;
-    settings.showVisualizer = valueShowVisualizer;
+    settings.showVisualizer = visualizerAvailable && valueShowVisualizer;
     settings.visualizerType = valueVisualizerType;
     settings.scrollingMode = valueScrollingMode;
     settings.maxWidth = parseInt(widthInput.text) || widgetMetadata.maxWidth;
@@ -88,9 +104,13 @@ ColumnLayout {
 
   NToggle {
     label: I18n.tr("bar.widget-settings.media-mini.show-visualizer.label")
-    description: I18n.tr("bar.widget-settings.media-mini.show-visualizer.description")
-    checked: valueShowVisualizer
-    onToggled: checked => valueShowVisualizer = checked
+    description: visualizerAvailable ? I18n.tr("bar.widget-settings.media-mini.show-visualizer.description") : I18n.tr("bar.widget-settings.media-mini.show-visualizer.unavailable")
+    enabled: visualizerAvailable
+    checked: visualizerAvailable && valueShowVisualizer
+    onToggled: checked => {
+                 if (visualizerAvailable)
+                   valueShowVisualizer = checked;
+               }
   }
 
   NComboBox {

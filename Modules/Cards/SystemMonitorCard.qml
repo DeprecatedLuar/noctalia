@@ -9,6 +9,44 @@ import qs.Widgets
 NBox {
   id: root
 
+  property bool pollingActive: false
+  property string statsConsumerId: ""
+  property bool statsConsumerRegistered: false
+
+  function syncStatsDemand() {
+    if (pollingActive && !statsConsumerRegistered) {
+      if (!statsConsumerId) {
+        Logger.w("SystemMonitorCard", "Cannot register system-stat polling without a consumer ID");
+        return;
+      }
+
+      SystemStatService.registerConsumer(statsConsumerId, {
+                                           "cpuUsage": true,
+                                           "cpuTemp": true,
+                                           "memory": true,
+                                           "disk": true,
+                                           "network": false,
+                                           "gpuTemp": false
+                                         });
+      statsConsumerRegistered = true;
+    } else if (!pollingActive && statsConsumerRegistered) {
+      SystemStatService.unregisterConsumer(statsConsumerId);
+      statsConsumerRegistered = false;
+    }
+  }
+
+  onPollingActiveChanged: syncStatsDemand()
+  Component.onCompleted: {
+    statsConsumerId = SystemStatService.createConsumerId("control-center-system-monitor");
+    syncStatsDemand();
+  }
+  Component.onDestruction: {
+    if (statsConsumerRegistered) {
+      SystemStatService.unregisterConsumer(statsConsumerId);
+      statsConsumerRegistered = false;
+    }
+  }
+
   Item {
     id: content
     anchors.fill: parent
@@ -59,12 +97,12 @@ NBox {
         height: content.widgetHeight
         Layout.alignment: Qt.AlignHCenter
         // Highlight color based on thresholds
-        fillColor: (SystemStatService.memPercent > Settings.data.systemMonitor.memCriticalThreshold) ? (Settings.data.systemMonitor.useCustomColors ? (Settings.data.systemMonitor.criticalColor || Color.mError) : Color.mError) : (SystemStatService.memPercent > Settings.data.systemMonitor.memWarningThreshold) ? (Settings.data.systemMonitor.useCustomColors ? (
+        fillColor: (SystemStatService.memPressurePercent > Settings.data.systemMonitor.memCriticalThreshold) ? (Settings.data.systemMonitor.useCustomColors ? (Settings.data.systemMonitor.criticalColor || Color.mError) : Color.mError) : (SystemStatService.memPressurePercent > Settings.data.systemMonitor.memWarningThreshold) ? (Settings.data.systemMonitor.useCustomColors ? (
                                                                                                                                                                                                                                                                                                                                                                         Settings.data.systemMonitor.warningColor
                                                                                                                                                                                                                                                                                                                                                                         || Color.mTertiary) :
                                                                                                                                                                                                                                                                                                                                                                       Color.mTertiary) :
                                                                                                                                                                                                                                                                                                                        Color.mPrimary
-        textColor: (SystemStatService.memPercent > Settings.data.systemMonitor.memCriticalThreshold) ? Color.mSurfaceVariant : (SystemStatService.memPercent > Settings.data.systemMonitor.memWarningThreshold) ? Color.mSurfaceVariant : Color.mOnSurface
+        textColor: (SystemStatService.memPressurePercent > Settings.data.systemMonitor.memCriticalThreshold) ? Color.mSurfaceVariant : (SystemStatService.memPressurePercent > Settings.data.systemMonitor.memWarningThreshold) ? Color.mSurfaceVariant : Color.mOnSurface
       }
       NCircleStat {
         value: SystemStatService.diskPercents["/"] ?? 0

@@ -4,6 +4,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Services.System
 import qs.Services.UI
 
 Singleton {
@@ -32,7 +33,8 @@ Singleton {
   // Component registration - any component needing audio data registers here
   property var registeredComponents: ({})
   readonly property int registeredCount: Object.keys(registeredComponents).length
-  property bool shouldRun: registeredCount > 0
+  readonly property bool available: ProgramCheckerService.checksFinished && ProgramCheckerService.cavaAvailable
+  property bool shouldRun: available && registeredCount > 0
 
   property var values: []
   property int barsCount: 32

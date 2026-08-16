@@ -92,6 +92,8 @@ DraggableDesktopWidget {
   // Visualizer visibility mode
   readonly property string visualizerVisibility: (widgetData && widgetData.visualizerVisibility !== undefined) ? widgetData.visualizerVisibility : "always"
   readonly property bool shouldShowVisualizer: {
+    if (!CavaService.available)
+      return false;
     if (!(widgetData && widgetData.visualizerType) || widgetData.visualizerType === "" || widgetData.visualizerType === "none")
       return false;
     if (visualizerVisibility === "always")

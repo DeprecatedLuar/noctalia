@@ -265,7 +265,8 @@
         },
         "show-visualizer": {
           "description": "Display an audio visualizer when music is playing.",
-          "label": "Show visualizer"
+          "label": "Show visualizer",
+          "unavailable": "Install the cava executable to enable the audio visualizer."
         },
         "use-fixed-width": {
           "description": "When enabled, the widget will always use the maximum width instead of dynamically adjusting to content.",

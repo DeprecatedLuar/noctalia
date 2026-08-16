@@ -182,6 +182,7 @@ SmartPanel {
 
         // System monitors combined in one card
         SystemMonitorCard {
+          pollingActive: root.isPanelVisible
           Layout.preferredWidth: Math.round(Style.baseWidgetSize * 2.625)
           Layout.fillHeight: true
         }
