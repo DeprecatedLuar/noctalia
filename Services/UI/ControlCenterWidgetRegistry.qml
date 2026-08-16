@@ -15,6 +15,7 @@ Singleton {
                            "DarkMode": darkModeComponent,
                            "KeepAwake": keepAwakeComponent,
                            "NightLight": nightLightComponent,
+                           "NoctaliaPerformance": noctaliaPerformanceComponent,
                            "Notifications": notificationsComponent,
                            "PowerProfile": powerProfileComponent,
                            "ScreenRecorder": screenRecorderComponent,
@@ -50,6 +51,9 @@ Singleton {
   }
   property Component nightLightComponent: Component {
     NightLight {}
+  }
+  property Component noctaliaPerformanceComponent: Component {
+    NoctaliaPerformance {}
   }
   property Component notificationsComponent: Component {
     Notifications {}
